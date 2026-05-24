@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+tinydb
+pydantic
+pydantic[email]
+python-multipart
+PyJWT
