@@ -3,10 +3,10 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from tinydb import Query
 
-from auth import get_current_user, create_access_token
+from auth import get_current_user, create_access_token, get_password_hash, verify_password
 from database import users_table
 from schemas import UserCreate, UserPreferences, UserResponse
 
@@ -34,6 +34,7 @@ def register_user(user: UserCreate):
         "id": str(uuid.uuid4()),
         "username": user.username,
         "email": user.email,
+        "hashed_password": get_password_hash(user.password),
         "preferences": UserPreferences().model_dump(),
         "created_at": now,
         "updated_at": now
@@ -47,8 +48,24 @@ def login_user(user: UserLogin):
     existing_user = users_table.get(User.username == user.username)
     
     if not existing_user:
+        print(f"[AUTH ERROR] Login failed: User '{user.username}' not found.")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+
+    hashed_password = existing_user.get("hashed_password")
+    
+    if not hashed_password:
+        print(f"[AUTH ERROR] Login failed: User '{user.username}' has no hashed password (legacy account).")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+        
+    try:
+        if not verify_password(user.password, hashed_password):
+            print(f"[AUTH ERROR] Login failed: Incorrect password for user '{user.username}'.")
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+    except Exception as e:
+        print(f"[AUTH ERROR] Exception verifying password for '{user.username}': {repr(e)}")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     
+    print(f"[AUTH INFO] User '{user.username}' logged in successfully.")
     token = create_access_token(data={"sub": existing_user["id"]})
     return {"token": token, "access_token": token, "token_type": "bearer"}
 

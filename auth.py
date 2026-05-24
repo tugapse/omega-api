@@ -1,4 +1,5 @@
 import jwt
+import bcrypt
 from datetime import datetime, timedelta, timezone
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -10,6 +11,17 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7 # 1 week
 
 security = HTTPBearer()
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    try:
+        return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
+    except Exception:
+        return False
+
+def get_password_hash(password: str) -> str:
+    salt = bcrypt.gensalt()
+    hashed_bytes = bcrypt.hashpw(password.encode('utf-8'), salt)
+    return hashed_bytes.decode('utf-8')
 
 def create_access_token(data: dict):
     to_encode = data.copy()
@@ -28,12 +40,6 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
     
     token = credentials.credentials
     User = Query()
-    
-    if token.startswith("mock-token-for-"):
-        user_id = token.replace("mock-token-for-", "")
-        user = users_table.get(User.id == user_id)
-        if user:
-            return user
             
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
