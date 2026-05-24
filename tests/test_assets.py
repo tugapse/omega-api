@@ -4,7 +4,7 @@ import os
 import shutil
 import uuid
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Allow imports from the root directory
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -55,7 +55,7 @@ def _create_test_project(name="Test Project"):
 
 def _create_mock_asset(project_id: str, virtual_path: str, asset_type: str, size: int):
     """Helper function to insert a mock asset record into the database."""
-    now = datetime.utcnow().isoformat() + "Z"
+    now = datetime.now(timezone.utc).isoformat() + "Z"
     asset_id = str(uuid.uuid4())
     assets_table.insert({
         "id": asset_id,

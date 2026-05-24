@@ -1,6 +1,6 @@
 import os
 import shutil
-from datetime import datetime
+from datetime import datetime, timezone
 
 import uuid
 import hashlib
@@ -162,7 +162,7 @@ async def create_asset(
         raise HTTPException(status_code=500, detail=f"Failed to write file to disk: {e}")
 
     # 5. Metadata Finalization
-    now_iso = datetime.utcnow().isoformat() + "Z"
+    now_iso = datetime.now(timezone.utc).isoformat() + "Z"
     mime_type, _ = mimetypes.guess_type(physical_path)
     
     final_asset_type = asset_type
@@ -299,7 +299,7 @@ def update_asset(
 
     # 5. Index Entry Synchronization
     if update_payload:
-        update_payload["updated_at"] = datetime.utcnow().isoformat() + "Z"
+        update_payload["updated_at"] = datetime.now(timezone.utc).isoformat() + "Z"
         asset_table.update(update_payload, doc_ids=[asset_doc.doc_id])
     else:
         return AssetResponse(**asset_doc)
