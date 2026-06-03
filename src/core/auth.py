@@ -3,8 +3,7 @@ import bcrypt
 from datetime import datetime, timedelta, timezone
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from database import users_table
-from tinydb import Query
+from src.core.database import get_db, AbstractDatabase
 
 SECRET_KEY = "omega-api-secret-key-change-in-production"
 ALGORITHM = "HS256"
@@ -30,7 +29,10 @@ def create_access_token(data: dict):
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
-def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> dict:
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: AbstractDatabase = Depends(get_db)
+) -> dict:
     if not credentials or not credentials.credentials:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -39,7 +41,6 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
         )
     
     token = credentials.credentials
-    User = Query()
             
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
@@ -63,7 +64,7 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
             headers={"WWW-Authenticate": "Bearer"},
         )
         
-    user = users_table.get(User.id == user_id)
+    user = db.get_user_by_id(user_id)
     if user:
         return user
         

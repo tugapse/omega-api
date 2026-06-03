@@ -1,9 +1,8 @@
-import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routes.users import router as users_router
-from routes.projects import router as projects_router
-from routes.assets import router as assets_router
+from ..routes.users import router as users_router
+from ..routes.projects import router as projects_router
+from ..routes.assets import router as assets_router
 
 app = FastAPI(title="Game Project Server API", version="1.0.0")
 
@@ -29,6 +28,3 @@ app.include_router(assets_router, prefix="/api/v1")
 @app.get("/health")
 def health_check():
     return {"status": "healthy"}
-
-if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=5000, reload=True)

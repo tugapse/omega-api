@@ -8,10 +8,10 @@ import sys
 # Allow imports from the root directory by adding it to the path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from main import app
-from database import projects_table, assets_table
-from auth import get_current_user
-from config import resolve_path
+from src.main import app
+from src.core.database import projects_table, assets_table
+from src.core.auth import get_current_user
+from src.core.config import resolve_path
 
 # Mock user for testing purposes
 TEST_USER = {"id": "test-user-id-projects", "username": "testuser_projects"}

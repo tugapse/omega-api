@@ -2,16 +2,17 @@ import uuid
 import os
 import shutil
 from datetime import datetime, timezone
+
+import uuid
 from fastapi import APIRouter, HTTPException, status, Depends
 from pydantic import BaseModel, Field
 from typing import Optional, List
 
-from database import projects_table, assets_table
-from tinydb import Query
-from schemas import ProjectCreate, ProjectResponse, ProjectSettings
-from auth import get_current_user
-from config import resolve_path
-from utils.slugger import generate_slug
+from src.core.database import get_db, AbstractDatabase
+from src.schemas import ProjectCreate, ProjectResponse, ProjectSettings
+from src.core.auth import get_current_user
+from src.core.config import resolve_path
+from src.utils.slugger import generate_slug
 
 router = APIRouter()
 
@@ -28,7 +29,7 @@ class ProjectUpdate(BaseModel):
     settings: Optional[ProjectSettingsUpdate] = None
 
 @router.post("/projects", status_code=status.HTTP_201_CREATED, response_model=ProjectResponse)
-def create_project(project: ProjectCreate, current_user: dict = Depends(get_current_user)):
+def create_project(project: ProjectCreate, current_user: dict = Depends(get_current_user), db: AbstractDatabase = Depends(get_db)):
     project_id = str(uuid.uuid4())
     owner_id = current_user["id"]
     slug = generate_slug(project.name)
@@ -51,28 +52,25 @@ def create_project(project: ProjectCreate, current_user: dict = Depends(get_curr
     os.makedirs(storage_path, exist_ok=True)
     
     # Database Sync
-    projects_table.insert(new_project)
+    db.create_project(new_project)
     
     return new_project
 
 @router.get("/projects", response_model=List[ProjectResponse])
-def list_projects(current_user: dict = Depends(get_current_user)):
-    Project = Query()
-    user_projects = projects_table.search(Project.owner_id == current_user["id"])
+def list_projects(current_user: dict = Depends(get_current_user), db: AbstractDatabase = Depends(get_db)):
+    user_projects = db.list_projects_by_owner(current_user["id"])
     return user_projects
 
 @router.get("/projects/{project_id}", response_model=ProjectResponse)
-def get_project(project_id: str, current_user: dict = Depends(get_current_user)):
-    Project = Query()
-    project = projects_table.get(Project.id == project_id)
+def get_project(project_id: str, current_user: dict = Depends(get_current_user), db: AbstractDatabase = Depends(get_db)):
+    project = db.get_project(project_id)
     if not project or project["owner_id"] != current_user["id"]:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
     return project
 
 @router.patch("/projects/{project_id}", response_model=ProjectResponse)
-def update_project(project_id: str, update_data: ProjectUpdate, current_user: dict = Depends(get_current_user)):
-    Project = Query()
-    project = projects_table.get(Project.id == project_id)
+def update_project(project_id: str, update_data: ProjectUpdate, current_user: dict = Depends(get_current_user), db: AbstractDatabase = Depends(get_db)):
+    project = db.get_project(project_id)
     if not project or project["owner_id"] != current_user["id"]:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
         
@@ -87,14 +85,12 @@ def update_project(project_id: str, update_data: ProjectUpdate, current_user: di
         
     update_dict["updated_at"] = get_utc_now_iso()
     
-    projects_table.update(update_dict, Project.id == project_id)
-    updated_project = projects_table.get(Project.id == project_id)
+    updated_project = db.update_project(project_id, update_dict)
     return updated_project
 
 @router.delete("/projects/{project_id}")
-def delete_project(project_id: str, current_user: dict = Depends(get_current_user)):
-    Project = Query()
-    project = projects_table.get(Project.id == project_id)
+def delete_project(project_id: str, current_user: dict = Depends(get_current_user), db: AbstractDatabase = Depends(get_db)):
+    project = db.get_project(project_id)
     if not project or project["owner_id"] != current_user["id"]:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
         
@@ -104,10 +100,6 @@ def delete_project(project_id: str, current_user: dict = Depends(get_current_use
     if os.path.exists(storage_path):
         shutil.rmtree(storage_path)
         
-    projects_table.remove(Project.id == project_id)
-    
-    # Remove assets
-    Asset = Query()
-    assets_table.remove(Asset.project_id == project_id)
+    db.delete_project(project_id)
     
     return {"status": "success", "message": "Project workspace and all associated physical assets purged from disk."}

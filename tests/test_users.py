@@ -6,8 +6,8 @@ import sys
 # Allow imports from the root directory by adding it to the path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from main import app
-from database import users_table
+from src.main import app
+from src.core.database import users_table
 
 client = TestClient(app)
 
@@ -25,12 +25,12 @@ def setup_and_teardown():
 
 def test_register_and_login_flow():
     # 1. Register User
-    res = client.post("/api/v1/auth/register", json={"username": "testuser", "email": "test@test.com"})
+    res = client.post("/api/v1/auth/register", json={"username": "testuser", "email": "test@test.com", "password": "password"})
     assert res.status_code == 201
     user_id = res.json()["id"]
 
     # 2. Register Duplicate User
-    res = client.post("/api/v1/auth/register", json={"username": "testuser", "email": "test@test.com"})
+    res = client.post("/api/v1/auth/register", json={"username": "testuser", "email": "test@test.com", "password": "password"})
     assert res.status_code == 400
 
     # 3. Login User

@@ -9,17 +9,16 @@ import mimetypes
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from starlette.responses import StreamingResponse
 from typing import List, Optional
-from tinydb import Query
 
-from database import get_db
-from schemas import (
+from src.core.database import get_db, AbstractDatabase
+from src.schemas import (
     AssetResponse,
     ProjectAssetIndexResponse,
     UserResponse,
     AssetUpdateRequest,
 )
-from auth import get_current_user
-from config import settings, resolve_path
+from src.core.auth import get_current_user
+from src.core.config import settings, resolve_path
 
 
 router = APIRouter(
@@ -36,7 +35,7 @@ def get_project_asset_index(
     project_id: str,
     type: Optional[str] = None,
     dir: Optional[str] = None,
-    db=Depends(get_db),
+    db: AbstractDatabase = Depends(get_db),
     current_user: UserResponse = Depends(get_current_user),
 ):
     """
@@ -46,31 +45,16 @@ def get_project_asset_index(
     - **Filtering:** Allows optional filtering by asset type and virtual directory prefix.
     """
     # 1. Verify project exists and belongs to the current user
-    Project = Query()
-    project_table = db.table("projects")
-    project = project_table.get((Project.id == project_id) & (Project.owner_id == current_user["id"]))
+    project = db.get_project(project_id)
 
-    if not project:
+    if not project or project["owner_id"] != current_user["id"]:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Project not found",
         )
 
-    # 2. Query assets for the given project_id
-    Asset = Query()
-    asset_table = db.table("assets")
-    all_project_assets = asset_table.search(Asset.project_id == project_id)
-
-    # 3. Apply optional filters
-    filtered_assets = []
-    for asset_doc in all_project_assets:
-        # Type filtering
-        if type and asset_doc.get("asset_type") != type:
-            continue
-        # Directory filtering
-        if dir and not asset_doc.get("virtual_path", "").startswith(dir):
-            continue
-        filtered_assets.append(asset_doc)
+    # 2 & 3. Query and filter assets for the given project_id
+    filtered_assets = db.list_assets(project_id=project_id, asset_type=type, directory=dir)
 
     # 4. Prepare response models and calculate aggregates
     asset_responses = [AssetResponse(**asset) for asset in filtered_assets]
@@ -97,7 +81,7 @@ async def create_asset(
     file: UploadFile = File(...),
     virtual_path: Optional[str] = Form(None),
     asset_type: Optional[str] = Form(None),
-    db=Depends(get_db),
+    db: AbstractDatabase = Depends(get_db),
     current_user: UserResponse = Depends(get_current_user),
 ):
     """
@@ -110,11 +94,9 @@ async def create_asset(
         - `asset_type`: Manually override the detected asset type.
     """
     # 1. Verify project exists and belongs to the current user
-    Project = Query()
-    project_table = db.table("projects")
-    project = project_table.get((Project.id == project_id) & (Project.owner_id == current_user["id"]))
+    project = db.get_project(project_id)
 
-    if not project:
+    if not project or project["owner_id"] != current_user["id"]:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Project not found",
@@ -132,9 +114,7 @@ async def create_asset(
         final_virtual_path = file.filename
 
     # 3. Collision Detection
-    Asset = Query()
-    asset_table = db.table("assets")
-    if asset_table.get((Asset.project_id == project_id) & (Asset.virtual_path == final_virtual_path)):
+    if db.get_asset_by_virtual_path(project_id, final_virtual_path):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"An asset already exists at path: {final_virtual_path}",
@@ -195,7 +175,7 @@ async def create_asset(
         "updated_at": now_iso,
     }
 
-    asset_table.insert(new_asset_doc)
+    db.create_asset(new_asset_doc)
     
     return AssetResponse(**new_asset_doc)
 
@@ -209,7 +189,7 @@ def update_asset(
     project_id: str,
     asset_id: str,
     update_data: AssetUpdateRequest,
-    db=Depends(get_db),
+    db: AbstractDatabase = Depends(get_db),
     current_user: UserResponse = Depends(get_current_user),
 ):
     """
@@ -221,20 +201,16 @@ def update_asset(
         - Rename/move asset by changing `virtual_path`.
     """
     # 1. Verify project exists and belongs to the current user
-    Project = Query()
-    project_table = db.table("projects")
-    project = project_table.get((Project.id == project_id) & (Project.owner_id == current_user["id"]))
+    project = db.get_project(project_id)
 
-    if not project:
+    if not project or project["owner_id"] != current_user["id"]:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Project not found",
         )
 
     # 2. Asset Node Verification
-    Asset = Query()
-    asset_table = db.table("assets")
-    asset_doc = asset_table.get((Asset.id == asset_id) & (Asset.project_id == project_id))
+    asset_doc = db.get_asset(asset_id, project_id)
 
     if not asset_doc:
         raise HTTPException(
@@ -258,12 +234,8 @@ def update_asset(
         update_payload["virtual_path"] = new_virtual_path
 
         # Collision Detection
-        existing_asset = asset_table.get(
-            (Asset.project_id == project_id) &
-            (Asset.virtual_path == new_virtual_path) &
-            (Asset.id != asset_id)
-        )
-        if existing_asset:
+        existing_asset = db.get_asset_by_virtual_path(project_id, new_virtual_path)
+        if existing_asset and existing_asset["id"] != asset_id:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="An asset already exists at the target destination path.",
@@ -300,12 +272,10 @@ def update_asset(
     # 5. Index Entry Synchronization
     if update_payload:
         update_payload["updated_at"] = datetime.now(timezone.utc).isoformat() + "Z"
-        asset_table.update(update_payload, doc_ids=[asset_doc.doc_id])
-    else:
-        return AssetResponse(**asset_doc)
-
-    updated_asset_doc = asset_table.get(doc_id=asset_doc.doc_id)
-    return AssetResponse(**updated_asset_doc)
+        updated_asset_doc = db.update_asset(asset_id, update_payload)
+        return AssetResponse(**updated_asset_doc)
+    
+    return AssetResponse(**asset_doc)
 
 
 @router.delete(
@@ -316,7 +286,7 @@ def update_asset(
 def delete_asset(
     project_id: str,
     asset_id: str,
-    db=Depends(get_db),
+    db: AbstractDatabase = Depends(get_db),
     current_user: UserResponse = Depends(get_current_user),
 ):
     """
@@ -327,20 +297,16 @@ def delete_asset(
     - **Cleanup:** Removes empty parent directories after file deletion.
     """
     # 1. Verify project exists and belongs to the current user
-    Project = Query()
-    project_table = db.table("projects")
-    project = project_table.get((Project.id == project_id) & (Project.owner_id == current_user["id"]))
+    project = db.get_project(project_id)
 
-    if not project:
+    if not project or project["owner_id"] != current_user["id"]:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Project not found",
         )
 
     # 2. Asset Registry Verification
-    Asset = Query()
-    asset_table = db.table("assets")
-    asset_doc = asset_table.get((Asset.id == asset_id) & (Asset.project_id == project_id))
+    asset_doc = db.get_asset(asset_id, project_id)
 
     if not asset_doc:
         raise HTTPException(
@@ -363,14 +329,10 @@ def delete_asset(
                 # Recursively remove empty directories
                 os.removedirs(parent_dir)
             except OSError:
-                # This can happen if the directory becomes non-empty
-                # between the check and the removal (race condition)
-                # or if permissions are insufficient.
-                # We can safely ignore it.
                 pass
     
     # 4. Database Cleansing Sync
-    asset_table.remove(doc_ids=[asset_doc.doc_id])
+    db.delete_asset(asset_id)
 
     return {
         "status": "success",
@@ -396,7 +358,7 @@ def chunked_file_reader(file_path: str, chunk_size: int = 65536):
 def stream_raw_asset(
     project_id: str,
     asset_id: str,
-    db=Depends(get_db),
+    db: AbstractDatabase = Depends(get_db),
     current_user: UserResponse = Depends(get_current_user),
 ):
     """
@@ -407,20 +369,16 @@ def stream_raw_asset(
     - **Headers:** Sets `Content-Type` and `Content-Length` from database metadata.
     """
     # 1. Identity Validation & Project Bounds
-    Project = Query()
-    project_table = db.table("projects")
-    project = project_table.get((Project.id == project_id) & (Project.owner_id == current_user["id"]))
+    project = db.get_project(project_id)
 
-    if not project:
+    if not project or project["owner_id"] != current_user["id"]:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Project not found",
         )
 
     # 2. Asset Node Verification
-    Asset = Query()
-    asset_table = db.table("assets")
-    asset_doc = asset_table.get((Asset.id == asset_id) & (Asset.project_id == project_id))
+    asset_doc = db.get_asset(asset_id, project_id)
 
     if not asset_doc:
         raise HTTPException(

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/env bash
 
 # Exit immediately if a command exits with a non-zero status.
 set -e
@@ -32,7 +32,7 @@ trap cleanup EXIT INT TERM
 # The `setsid` command runs the server in a new session, making it the leader of a new process group.
 # This allows us to kill the entire process group later, preventing orphaned child processes.
 echo "Starting server..."
-(setsid uvicorn main:app --host 0.0.0.0 --port 8000 > $SERVER_LOG 2>&1 & echo $! > $SERVER_PID_FILE)
+(setsid uvicorn src.core.app:app --host 0.0.0.0 --port 8000 > $SERVER_LOG 2>&1 & echo $! > $SERVER_PID_FILE)
 sleep 5 # Give the server a moment to start
 
 # Check if the server started successfully

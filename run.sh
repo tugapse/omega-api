@@ -14,6 +14,6 @@ if [ ! -d "$VENV_FOLDER" ]; then
 fi
 
 source $VENV_FOLDER/bin/activate 
-python3 $FOLDER/main.py
+python3 -m src.main
 deactivate
 exit 0

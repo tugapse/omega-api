@@ -4,11 +4,10 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from tinydb import Query
 
-from auth import get_current_user, create_access_token, get_password_hash, verify_password
-from database import users_table
-from schemas import UserCreate, UserPreferences, UserResponse
+from src.core.auth import get_current_user, create_access_token, get_password_hash, verify_password
+from src.core.database import get_db, AbstractDatabase
+from src.schemas import UserCreate, UserPreferences, UserResponse
 
 router = APIRouter()
 
@@ -21,9 +20,8 @@ class UserUpdate(BaseModel):
     email: Optional[str] = None
 
 @router.post("/auth/register", status_code=status.HTTP_201_CREATED, response_model=UserResponse)
-def register_user(user: UserCreate):
-    User = Query()
-    if users_table.contains((User.email == user.email) | (User.username == user.username)):
+def register_user(user: UserCreate, db: AbstractDatabase = Depends(get_db)):
+    if db.get_user_by_email(user.email) or db.get_user_by_username(user.username):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="User with this email or username already exists"
@@ -39,13 +37,12 @@ def register_user(user: UserCreate):
         "created_at": now,
         "updated_at": now
     }
-    users_table.insert(new_user)
+    db.create_user(new_user)
     return new_user
 
 @router.post("/auth/login")
-def login_user(user: UserLogin):
-    User = Query()
-    existing_user = users_table.get(User.username == user.username)
+def login_user(user: UserLogin, db: AbstractDatabase = Depends(get_db)):
+    existing_user = db.get_user_by_username(user.username)
     
     if not existing_user:
         print(f"[AUTH ERROR] Login failed: User '{user.username}' not found.")
@@ -78,13 +75,12 @@ def get_profile(current_user: dict = Depends(get_current_user)):
     return current_user
 
 @router.patch("/users/me", response_model=UserResponse)
-def update_profile(user_update: UserUpdate, current_user: dict = Depends(get_current_user)):
-    User = Query()
+def update_profile(user_update: UserUpdate, current_user: dict = Depends(get_current_user), db: AbstractDatabase = Depends(get_db)):
     update_data = user_update.model_dump(exclude_unset=True)
     
     if update_data:
         update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
-        users_table.update(update_data, User.id == current_user["id"])
+        db.update_user(current_user["id"], update_data)
         current_user.update(update_data)
         
     return current_user
@@ -94,8 +90,7 @@ def get_preferences(current_user: dict = Depends(get_current_user)):
     return current_user.get("preferences", {})
 
 @router.put("/users/me/preferences", response_model=UserPreferences)
-def update_preferences(preferences: UserPreferences, current_user: dict = Depends(get_current_user)):
-    User = Query()
+def update_preferences(preferences: UserPreferences, current_user: dict = Depends(get_current_user), db: AbstractDatabase = Depends(get_db)):
     updates = {"preferences": preferences.model_dump(), "updated_at": datetime.now(timezone.utc).isoformat()}
-    users_table.update(updates, User.id == current_user["id"])
+    db.update_user(current_user["id"], updates)
     return preferences
