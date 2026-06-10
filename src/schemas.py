@@ -44,7 +44,7 @@ class AssetResponse(BaseModel):
     id: str
     filename: str
     virtual_path: str
-    asset_type: Literal["code", "image", "audio", "text", "raw"]
+    asset_type: Literal["code", "image", "audio", "text", "raw", "scene"]
     mime_type: str
     size_bytes: int = Field(ge=0)
     sha256: str = Field(min_length=64, max_length=64)
@@ -61,4 +61,8 @@ class ProjectAssetIndexResponse(BaseModel):
 
 class AssetUpdateRequest(BaseModel):
     virtual_path: Optional[str] = None
-    asset_type: Optional[Literal["code", "image", "audio", "text", "raw"]] = None
+    asset_type: Optional[Literal["code", "image", "audio", "text", "raw", "scene"]] = None
+
+
+class AssetTextUpdate(BaseModel):
+    text: str

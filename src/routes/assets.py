@@ -7,7 +7,7 @@ import hashlib
 import mimetypes
 
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
-from starlette.responses import StreamingResponse
+from starlette.responses import StreamingResponse, PlainTextResponse
 from typing import List, Optional
 
 from src.core.database import get_db, AbstractDatabase
@@ -16,6 +16,7 @@ from src.schemas import (
     ProjectAssetIndexResponse,
     UserResponse,
     AssetUpdateRequest,
+    AssetTextUpdate,
 )
 from src.core.auth import get_current_user
 from src.core.config import settings, resolve_path
@@ -36,7 +37,7 @@ def get_project_asset_index(
     type: Optional[str] = None,
     dir: Optional[str] = None,
     db: AbstractDatabase = Depends(get_db),
-    current_user: UserResponse = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
 ):
     """
     Retrieves a filtered and aggregated list of asset metadata for a specific project.
@@ -82,7 +83,7 @@ async def create_asset(
     virtual_path: Optional[str] = Form(None),
     asset_type: Optional[str] = Form(None),
     db: AbstractDatabase = Depends(get_db),
-    current_user: UserResponse = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
 ):
     """
     Uploads a new asset to a project, fingerprints it, and registers it in the database.
@@ -190,7 +191,7 @@ def update_asset(
     asset_id: str,
     update_data: AssetUpdateRequest,
     db: AbstractDatabase = Depends(get_db),
-    current_user: UserResponse = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
 ):
     """
     Updates an asset's metadata or physically relocates it within the project's storage.
@@ -218,7 +219,7 @@ def update_asset(
             detail="Asset not found",
         )
 
-    update_payload = update_data.dict(exclude_unset=True)
+    update_payload = update_data.model_dump(exclude_unset=True)
     
     # 3. Path Sanitization and Collision Interception
     if "virtual_path" in update_payload and update_payload["virtual_path"] is not None:
@@ -287,7 +288,7 @@ def delete_asset(
     project_id: str,
     asset_id: str,
     db: AbstractDatabase = Depends(get_db),
-    current_user: UserResponse = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
 ):
     """
     Deletes an asset, including its physical file and database record.
@@ -351,7 +352,7 @@ def chunked_file_reader(file_path: str, chunk_size: int = 65536):
 
 
 @router.get(
-    "/projects/{project_id}/assets/{asset_id}/raw",
+    "/projects/{project_id}/assets/{asset_id}",
     response_class=StreamingResponse,
     summary="Stream raw asset binary data",
 )
@@ -359,7 +360,7 @@ def stream_raw_asset(
     project_id: str,
     asset_id: str,
     db: AbstractDatabase = Depends(get_db),
-    current_user: UserResponse = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),
 ):
     """
     Serves the raw binary contents of a specific asset file.
@@ -418,3 +419,193 @@ def stream_raw_asset(
         media_type=media_type,
         headers=headers,
     )
+
+
+@router.get(
+    "/projects/{project_id}/assets/{asset_id}/text",
+    response_class=PlainTextResponse,
+    summary="Get asset text content",
+)
+def get_asset_text_content(
+    project_id: str,
+    asset_id: str,
+    db: AbstractDatabase = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Retrieves the decoded text content of a specific asset file.
+
+    - **Security:** Requires user authentication and ownership of the project.
+    - **Validation:** Ensures the file can be decoded as UTF-8.
+    """
+    # 1. Identity Validation & Project Bounds
+    project = db.get_project(project_id)
+
+    if not project or project["owner_id"] != current_user["id"]:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
+
+    # 2. Asset Node Verification
+    asset_doc = db.get_asset(asset_id, project_id)
+
+    if not asset_doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Asset not found",
+        )
+
+    # 3. Path Resolution & Sanitization Guardrails
+    virtual_path = asset_doc.get("virtual_path")
+    if not virtual_path or "../" in virtual_path or "..\\" in virtual_path:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or insecure asset path.",
+        )
+
+    physical_path_str = f"@ROOT/storage/{current_user['id']}/projects/{project_id}/{virtual_path}"
+    physical_path = resolve_path(physical_path_str)
+
+    if not os.path.exists(physical_path):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Physical asset file missing from server storage disk",
+        )
+
+    # 4. Text Decoding
+    try:
+        with open(physical_path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except UnicodeDecodeError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Asset is not a valid UTF-8 text file.",
+        )
+
+    return PlainTextResponse(content=content)
+
+
+@router.put(
+    "/projects/{project_id}/assets/{asset_id}/text",
+    response_model=AssetResponse,
+    summary="Update asset text content",
+)
+def update_asset_text_content(
+    project_id: str,
+    asset_id: str,
+    update_data: AssetTextUpdate,
+    db: AbstractDatabase = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Overwrites the content of a text asset.
+
+    - **Security:** Requires user authentication and ownership of the project.
+    - **Updates:** Recomputes the SHA256 hash and file size.
+    """
+    project = db.get_project(project_id)
+    if not project or project["owner_id"] != current_user["id"]:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
+
+    asset_doc = db.get_asset(asset_id, project_id)
+    if not asset_doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Asset not found",
+        )
+
+    virtual_path = asset_doc.get("virtual_path")
+    if not virtual_path or "../" in virtual_path or "..\\" in virtual_path:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or insecure asset path.",
+        )
+
+    physical_path = resolve_path(f"@ROOT/storage/{current_user['id']}/projects/{project_id}/{virtual_path}")
+
+    text_bytes = update_data.text.encode("utf-8")
+    sha256_hash = hashlib.sha256(text_bytes).hexdigest()
+    size_bytes = len(text_bytes)
+
+    try:
+        with open(physical_path, "wb") as f:
+            f.write(text_bytes)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to write file to disk: {e}")
+
+    update_payload = {
+        "sha256": sha256_hash,
+        "size_bytes": size_bytes,
+        "updated_at": datetime.now(timezone.utc).isoformat() + "Z"
+    }
+    updated_asset_doc = db.update_asset(asset_id, update_payload)
+    return AssetResponse(**updated_asset_doc)
+
+
+@router.put(
+    "/projects/{project_id}/assets/{asset_id}/raw",
+    response_model=AssetResponse,
+    summary="Replace raw asset content",
+)
+async def replace_asset_raw_content(
+    project_id: str,
+    asset_id: str,
+    file: UploadFile = File(...),
+    db: AbstractDatabase = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Overwrites the binary content of an existing asset.
+
+    - **Security:** Requires user authentication and ownership of the project.
+    - **Updates:** Recomputes the SHA256 hash, file size, and optionally MIME type.
+    """
+    project = db.get_project(project_id)
+    if not project or project["owner_id"] != current_user["id"]:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
+
+    asset_doc = db.get_asset(asset_id, project_id)
+    if not asset_doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Asset not found",
+        )
+
+    virtual_path = asset_doc.get("virtual_path")
+    if not virtual_path or "../" in virtual_path or "..\\" in virtual_path:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or insecure asset path.",
+        )
+
+    physical_path = resolve_path(f"@ROOT/storage/{current_user['id']}/projects/{project_id}/{virtual_path}")
+
+    sha256_hash = hashlib.sha256()
+    size_bytes = 0
+    
+    try:
+        with open(physical_path, "wb") as f:
+            while content := await file.read(65536):
+                sha256_hash.update(content)
+                f.write(content)
+                size_bytes += len(content)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to write file to disk: {e}")
+
+    mime_type, _ = mimetypes.guess_type(physical_path)
+
+    update_payload = {
+        "sha256": sha256_hash.hexdigest(),
+        "size_bytes": size_bytes,
+        "mime_type": mime_type or asset_doc.get("mime_type", "application/octet-stream"),
+        "updated_at": datetime.now(timezone.utc).isoformat() + "Z"
+    }
+    updated_asset_doc = db.update_asset(asset_id, update_payload)
+    return AssetResponse(**updated_asset_doc)
